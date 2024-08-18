@@ -1,8 +1,13 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:confetti/confetti.dart';
+import 'dart:io';
+import 'package:cached_network_image/cached_network_image.dart';
 
 void main() {
   runApp(QuizApp());
@@ -34,17 +39,57 @@ class HomeScreen extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              SvgPicture.asset(
+                'assets/quiz_logo.svg',
+                height: 150,
+              ),
+              SizedBox(height: 30),
               Text(
                 'Welcome to Purple Quiz!',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: CupertinoColors.systemPurple),
               ),
               SizedBox(height: 20),
+              Text(
+                'Test your knowledge and have fun!',
+                style:
+                    TextStyle(fontSize: 18, color: CupertinoColors.systemGrey),
+              ),
+              SizedBox(height: 40),
               CupertinoButton.filled(
                 child: Text('Start Quiz'),
                 onPressed: () {
                   Navigator.push(
                     context,
                     CupertinoPageRoute(builder: (context) => QuizScreen()),
+                  );
+                },
+              ),
+              SizedBox(height: 20),
+              CupertinoButton(
+                child: Text('How to Play'),
+                onPressed: () {
+                  showCupertinoModalPopup(
+                    context: context,
+                    builder: (BuildContext context) => CupertinoActionSheet(
+                      title: Text('How to Play'),
+                      message: Text(
+                        '1. Answer questions within the time limit\n'
+                        '2. Use hints if you need help\n'
+                        '3. Score points for correct answers\n'
+                        '4. Try to beat your high score!',
+                      ),
+                      actions: [
+                        CupertinoActionSheetAction(
+                          child: Text('Got it!'),
+                          onPressed: () {
+                            Navigator.pop(context);
+                          },
+                        ),
+                      ],
+                    ),
                   );
                 },
               ),
@@ -90,7 +135,8 @@ class QuizScreen extends StatefulWidget {
   _QuizScreenState createState() => _QuizScreenState();
 }
 
-class _QuizScreenState extends State<QuizScreen> with SingleTickerProviderStateMixin {
+class _QuizScreenState extends State<QuizScreen>
+    with SingleTickerProviderStateMixin {
   List<Question> questions = [];
   int currentQuestion = 0;
   int score = 0;
@@ -100,6 +146,7 @@ class _QuizScreenState extends State<QuizScreen> with SingleTickerProviderStateM
   late Animation<double> _animation;
   Timer? _timer;
   int _timeLeft = 30;
+  late ConfettiController _confettiController;
 
   @override
   void initState() {
@@ -109,31 +156,71 @@ class _QuizScreenState extends State<QuizScreen> with SingleTickerProviderStateM
       vsync: this,
       duration: Duration(milliseconds: 500),
     );
-    _animation = CurvedAnimation(parent: _animationController, curve: Curves.easeInOut);
+    _animation =
+        CurvedAnimation(parent: _animationController, curve: Curves.easeInOut);
+    _confettiController =
+        ConfettiController(duration: const Duration(seconds: 1));
   }
 
   @override
   void dispose() {
     _animationController.dispose();
     _timer?.cancel();
+    _confettiController.dispose();
     super.dispose();
   }
 
   Future<void> fetchQuestions() async {
-    final response = await http.get(Uri.parse('http://localhost:8080/api/quiz'));
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
+    try {
+      final String baseUrl =
+          Platform.isAndroid ? 'http://10.0.2.2:8080' : 'http://localhost:8080';
+      final response = await http.get(Uri.parse('$baseUrl/api/quiz'));
+      print('Response status: ${response.statusCode}');
+      print('Response body: ${response.body}');
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        setState(() {
+          questions = (data['questions'] as List)
+              .map((q) => Question.fromJson(q))
+              .toList();
+          isLoading = false;
+        });
+        startTimer();
+        _animationController.forward();
+      } else {
+        throw Exception(
+            'Failed to load questions. Status code: ${response.statusCode}');
+      }
+    } catch (e) {
       setState(() {
-        questions = (data['questions'] as List)
-            .map((q) => Question.fromJson(q))
-            .toList();
         isLoading = false;
       });
-      startTimer();
-      _animationController.forward();
-    } else {
-      throw Exception('Failed to load questions');
+      if (e is SocketException) {
+        showErrorDialog(
+            'Network error: Unable to connect to the server. Please check your internet connection and try again.');
+      } else {
+        showErrorDialog('Error loading questions: $e');
+      }
     }
+  }
+
+  void showErrorDialog(String message) {
+    showCupertinoDialog(
+      context: context,
+      builder: (BuildContext context) => CupertinoAlertDialog(
+        title: Text('Error'),
+        content: Text(message),
+        actions: <Widget>[
+          CupertinoDialogAction(
+            child: Text('OK'),
+            onPressed: () {
+              Navigator.of(context).pop();
+              Navigator.of(context).pop(); // Return to home screen
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   void startTimer() {
@@ -161,6 +248,7 @@ class _QuizScreenState extends State<QuizScreen> with SingleTickerProviderStateM
   void answerQuestion(int selectedAnswer) async {
     if (selectedAnswer == questions[currentQuestion].answer) {
       score++;
+      _confettiController.play();
       await playSound('correct.wav');
     } else {
       await playSound('incorrect.wav');
@@ -181,7 +269,8 @@ class _QuizScreenState extends State<QuizScreen> with SingleTickerProviderStateM
       Navigator.pushReplacement(
         context,
         CupertinoPageRoute(
-          builder: (context) => ResultsScreen(score: score, total: questions.length),
+          builder: (context) =>
+              ResultsScreen(score: score, total: questions.length),
         ),
       );
     }
@@ -204,103 +293,143 @@ class _QuizScreenState extends State<QuizScreen> with SingleTickerProviderStateM
         middle: Text('Quiz'),
       ),
       child: SafeArea(
-        child: isLoading
-            ? Center(child: CupertinoActivityIndicator())
-            : Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Question ${currentQuestion + 1}/${questions.length}',
-                          style: TextStyle(fontSize: 18),
-                        ),
-                        Text(
-                          'Time: $_timeLeft s',
-                          style: TextStyle(fontSize: 18, color: CupertinoColors.systemRed),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    height: 6,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.all(Radius.circular(10)),
-                      child: CupertinoListSection.insetGrouped(
-                        margin: EdgeInsets.zero,
-                        children: [
-                          Container(
-                            height: 6,
-                            child: FractionallySizedBox(
-                              widthFactor: (currentQuestion + 1) / questions.length,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: CupertinoColors.activeBlue,
-                                  borderRadius: BorderRadius.all(Radius.circular(10)),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: FadeTransition(
-                      opacity: _animation,
-                      child: SingleChildScrollView(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
+        child: Stack(
+          children: [
+            isLoading
+                ? Center(child: CupertinoActivityIndicator())
+                : Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Padding(
-                              padding: const EdgeInsets.all(16.0),
+                            Text(
+                              'Question ${currentQuestion + 1}/${questions.length}',
+                              style: TextStyle(fontSize: 18),
+                            ),
+                            Container(
+                              padding: EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: CupertinoColors.systemRed,
+                                borderRadius: BorderRadius.circular(15),
+                              ),
                               child: Text(
-                                questions[currentQuestion].text,
-                                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                                textAlign: TextAlign.center,
+                                '$_timeLeft s',
+                                style: TextStyle(
+                                    fontSize: 18, color: CupertinoColors.white),
                               ),
                             ),
-                            if (questions[currentQuestion].imageUrl.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.all(16.0),
-                                child: Image.network(
-                                  questions[currentQuestion].imageUrl,
-                                  height: 200,
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                            ...questions[currentQuestion].options.asMap().entries.map((option) {
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
-                                child: CupertinoButton.filled(
-                                  child: Text(option.value),
-                                  onPressed: () => answerQuestion(option.key),
-                                ),
-                              );
-                            }).toList(),
-                            SizedBox(height: 20),
-                            CupertinoButton(
-                              child: Text('Show Hint'),
-                              onPressed: showHint,
-                            ),
-                            if (isHintVisible)
-                              Padding(
-                                padding: const EdgeInsets.all(16.0),
-                                child: Text(
-                                  questions[currentQuestion].hint,
-                                  style: TextStyle(fontSize: 18, fontStyle: FontStyle.italic),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
                           ],
                         ),
                       ),
-                    ),
+                      LinearProgressIndicator(
+                        value: (currentQuestion + 1) / questions.length,
+                        backgroundColor: CupertinoColors.systemGrey5,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                            CupertinoColors.activeBlue),
+                      ),
+                      Expanded(
+                        child: FadeTransition(
+                          opacity: _animation,
+                          child: SingleChildScrollView(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.all(16.0),
+                                  child: Text(
+                                    questions[currentQuestion].text,
+                                    style: TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.bold),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                                if (questions[currentQuestion]
+                                    .imageUrl
+                                    .isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.all(16.0),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: CachedNetworkImage(
+                                        imageUrl:
+                                            questions[currentQuestion].imageUrl,
+                                        height: 200,
+                                        width: double.infinity,
+                                        fit: BoxFit.cover,
+                                        placeholder: (context, url) =>
+                                            CupertinoActivityIndicator(),
+                                        errorWidget: (context, url, error) {
+                                          print("Error loading image: $error");
+                                          return Container(
+                                            height: 200,
+                                            width: double.infinity,
+                                            color: CupertinoColors.systemGrey5,
+                                            child: Icon(CupertinoIcons.photo,
+                                                size: 50,
+                                                color:
+                                                    CupertinoColors.systemGrey),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                for (int i = 0;
+                                    i <
+                                        questions[currentQuestion]
+                                            .options
+                                            .length;
+                                    i++)
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 16.0, vertical: 8.0),
+                                    child: CupertinoButton(
+                                      color: CupertinoColors.activeBlue,
+                                      onPressed: () => answerQuestion(i),
+                                      child: Text(questions[currentQuestion]
+                                          .options[i]),
+                                    ),
+                                  ),
+                                if (!isHintVisible)
+                                  CupertinoButton(
+                                    child: Text('Show Hint'),
+                                    onPressed: showHint,
+                                  ),
+                                if (isHintVisible)
+                                  Padding(
+                                    padding: const EdgeInsets.all(16.0),
+                                    child: Text(
+                                      questions[currentQuestion].hint,
+                                      style: TextStyle(
+                                          fontSize: 16,
+                                          color: CupertinoColors.systemGrey),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
+            Align(
+              alignment: Alignment.topCenter,
+              child: ConfettiWidget(
+                confettiController: _confettiController,
+                blastDirection: -3.14 / 2, // Upwards
+                colors: [
+                  CupertinoColors.systemPurple,
+                  CupertinoColors.systemOrange
                 ],
+                emissionFrequency: 0.05,
               ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -316,7 +445,7 @@ class ResultsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
-        middle: Text('Quiz Results'),
+        middle: Text('Results'),
       ),
       child: SafeArea(
         child: Center(
@@ -324,24 +453,35 @@ class ResultsScreen extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
-                'Your score:',
-                style: TextStyle(fontSize: 24),
+                'You scored:',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
               SizedBox(height: 20),
               Text(
                 '$score / $total',
-                style: TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: CupertinoColors.systemPurple),
-              ),
-              SizedBox(height: 20),
-              Text(
-                'Great job!',
-                style: TextStyle(fontSize: 20, color: CupertinoColors.systemGreen),
+                style: TextStyle(
+                    fontSize: 48,
+                    fontWeight: FontWeight.bold,
+                    color: CupertinoColors.systemPurple),
               ),
               SizedBox(height: 40),
               CupertinoButton.filled(
-                child: Text('Restart Quiz'),
+                child: Text('Play Again'),
                 onPressed: () {
-                  Navigator.of(context).popUntil((route) => route.isFirst);
+                  Navigator.pushReplacement(
+                    context,
+                    CupertinoPageRoute(builder: (context) => QuizScreen()),
+                  );
+                },
+              ),
+              SizedBox(height: 20),
+              CupertinoButton(
+                child: Text('Go to Home'),
+                onPressed: () {
+                  Navigator.pushReplacement(
+                    context,
+                    CupertinoPageRoute(builder: (context) => HomeScreen()),
+                  );
                 },
               ),
             ],
